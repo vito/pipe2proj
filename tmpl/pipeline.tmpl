@@ -1,0 +1,12 @@
+---
+{{- if .Groups}}
+groups:
+{{- range .Groups}}
+- {{. | yaml 1}}
+{{- end}}
+
+{{end}}
+jobs:
+{{- range .Jobs}}
+- {{. | yaml 1}}
+{{end}}

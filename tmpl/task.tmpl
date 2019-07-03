@@ -1,0 +1,57 @@
+---
+platform: {{.Platform}}
+
+image_resource:
+  type: {{.ImageResource.Type}}
+  source:
+    {{.ImageResource.Source | yaml 2}}
+
+{{- if .Params}}
+
+params:
+{{- range $k, $v := .Params}}
+  {{$k}}: {{$v | yaml 0}}
+{{- end}}
+{{- end}}
+
+{{- if .Inputs}}
+
+inputs:
+{{- range .Inputs}}
+- name: {{.Name}}
+{{- if .Path}}
+  path: {{.Path}}
+{{- end}}
+{{- if .Optional}}
+  optional: true
+{{- end}}
+{{- end}}
+{{- end}}
+
+{{- if .Outputs}}
+
+outputs:
+{{- range .Outputs}}
+- name: {{.Name}}
+{{- if .Path}}
+  path: {{.Path}}
+{{- end}}
+{{- end}}
+{{- end}}
+
+{{- if .Caches}}
+
+caches:
+{{- range .Caches}}
+- path: {{.Path}}
+{{- end}}
+{{- end}}
+
+run:
+  path: {{.Run.Path | yaml 0}}
+{{- if .Run.Args}}
+  args:
+{{- range .Run.Args}}
+  - {{. | yaml 2}}
+{{- end}}
+{{- end}}
