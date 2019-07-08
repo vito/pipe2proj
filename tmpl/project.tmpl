@@ -2,4 +2,6 @@
 name: {{.Name}}
 
 plan:
-- set_pipeline: {{.PipelineName}}
+{{- range .Plan}}
+- {{range $k, $v := .}}{{$k}}: {{$v}}{{end}}
+{{- end}}

@@ -28,11 +28,12 @@ type Command struct {
 	TaskResources map[string]flag.Dir `long:"task-artifact" short:"t" description:"Mapping from artifact name to local directory, used for converting tasks."`
 
 	TemplatesDir flag.Dir `long:"config-templates" description:"Directory containing templates for pretty-printing configs."`
+	tmpl         *template.Template
 }
 
 type ProjectConfig struct {
-	Name         string
-	PipelineName string
+	Name string
+	Plan []map[string]string // XXX: hacky - set_pipeline doesn't exist yet
 }
 
 // PipelineConfig is just atc.Config with omitempty everywhere.
@@ -58,35 +59,9 @@ type AnonymousResourceConfig struct {
 func (cmd Command) Execute([]string) error {
 	logrus.SetLevel(logrus.DebugLevel)
 
-	var tmpl *template.Template
-	if cmd.TemplatesDir != "" {
-		tmpl = template.New("root").Funcs(template.FuncMap{
-			"yaml": func(indent int, x interface{}) (string, error) {
-				payload, err := yaml.Marshal(x)
-				if err != nil {
-					return "", err
-				}
-
-				trimmed := strings.TrimSuffix(string(payload), "\n")
-
-				var indented string
-				for _, line := range strings.Split(trimmed, "\n") {
-					if len(indented) > 0 {
-						indented += "\n" + strings.Repeat("  ", indent)
-					}
-
-					indented += line
-				}
-
-				return indented, nil
-			},
-		})
-
-		var err error
-		tmpl, err = tmpl.ParseGlob(cmd.TemplatesDir.Path() + "/*.tmpl")
-		if err != nil {
-			return fmt.Errorf("parsing templates: %s", err)
-		}
+	err := cmd.loadTemplates()
+	if err != nil {
+		return fmt.Errorf("loading templates: %s", err)
 	}
 
 	var config PipelineConfig
@@ -106,20 +81,6 @@ func (cmd Command) Execute([]string) error {
 	resourcesPath := filepath.Join(cmd.ProjectPath.Path(), "resources")
 	resourceTypesPath := filepath.Join(cmd.ProjectPath.Path(), "resource-types")
 
-	if len(config.Resources) > 0 {
-		err := os.MkdirAll(resourcesPath, 0755)
-		if err != nil {
-			return fmt.Errorf("creating resources directory: %s", err)
-		}
-	}
-
-	if len(config.ResourceTypes) > 0 {
-		err := os.MkdirAll(resourceTypesPath, 0755)
-		if err != nil {
-			return fmt.Errorf("creating resource types directory: %s", err)
-		}
-	}
-
 	for _, res := range config.Resources {
 		resourcePath := filepath.Join(resourcesPath, res.Name+".yml")
 
@@ -127,9 +88,9 @@ func (cmd Command) Execute([]string) error {
 			"name": res.Name,
 		}).Info("converting resource")
 
-		err := render(resourcePath, tmpl, "resource.tmpl", anonymize(res))
+		err := cmd.render(resourcePath, "resource.tmpl", anonymize(res))
 		if err != nil {
-			return fmt.Errorf("failed to write resource: %s", err)
+			return fmt.Errorf("failed to render resource: %s", err)
 		}
 	}
 
@@ -140,9 +101,9 @@ func (cmd Command) Execute([]string) error {
 			"name": res.Name,
 		}).Info("converting resource type")
 
-		err := render(resourceTypePath, tmpl, "resource.tmpl", anonymize(res))
+		err := cmd.render(resourceTypePath, "resource.tmpl", anonymize(res))
 		if err != nil {
-			return fmt.Errorf("failed to write resource: %s", err)
+			return fmt.Errorf("failed to render resource type: %s", err)
 		}
 	}
 
@@ -208,9 +169,9 @@ func (cmd Command) Execute([]string) error {
 					taskConfig.Run.Path = filepath.Join(cmd.ProjectName, "tasks", "scripts", scriptName)
 				}
 
-				err = render(taskPath, tmpl, "task.tmpl", taskConfig)
+				err = cmd.render(taskPath, "task.tmpl", taskConfig)
 				if err != nil {
-					return p, fmt.Errorf("failed to write task: %s", err)
+					return p, fmt.Errorf("failed to render task: %s", err)
 				}
 
 				p.TaskConfigPath = ""
@@ -232,23 +193,73 @@ func (cmd Command) Execute([]string) error {
 	config.Jobs = newJobs
 
 	pipelinePath := filepath.Join(pipelinesPath, cmd.PipelineName+".yml")
-	err = render(pipelinePath, tmpl, "pipeline.tmpl", config)
+	err = cmd.render(pipelinePath, "pipeline.tmpl", config)
 	if err != nil {
-		return fmt.Errorf("failed to sync pipeline: %s", err)
+		return fmt.Errorf("failed to render pipeline: %s", err)
+	}
+
+	projectConfig := ProjectConfig{
+		Name: cmd.ProjectName,
+		Plan: []map[string]string{
+			{"set_pipeline": cmd.PipelineName},
+		},
+	}
+
+	projectPath := filepath.Join(cmd.ProjectPath.Path(), "project.yml")
+	err = cmd.render(projectPath, "project.tmpl", projectConfig)
+	if err != nil {
+		return fmt.Errorf("failed to render project: %s", err)
 	}
 
 	return nil
 }
 
-func render(dest string, tmpl *template.Template, name string, val interface{}) error {
+func (cmd *Command) loadTemplates() error {
+	if cmd.TemplatesDir == "" {
+		logrus.Warn("no templates; converted files will be ugly")
+		return nil
+	}
+
+	cmd.tmpl = template.New("root").Funcs(template.FuncMap{
+		"yaml": func(indent int, x interface{}) (string, error) {
+			payload, err := yaml.Marshal(x)
+			if err != nil {
+				return "", err
+			}
+
+			trimmed := strings.TrimSuffix(string(payload), "\n")
+
+			var indented string
+			for _, line := range strings.Split(trimmed, "\n") {
+				if len(indented) > 0 {
+					indented += "\n" + strings.Repeat("  ", indent)
+				}
+
+				indented += line
+			}
+
+			return indented, nil
+		},
+	})
+
+	var err error
+	cmd.tmpl, err = cmd.tmpl.ParseGlob(cmd.TemplatesDir.Path() + "/*.tmpl")
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (cmd *Command) render(dest string, name string, val interface{}) error {
 	payload, err := yaml.Marshal(val)
 	if err != nil {
 		return err
 	}
 
 	prettyPayload := new(bytes.Buffer)
-	if tmpl != nil {
-		err = tmpl.ExecuteTemplate(prettyPayload, name, val)
+	if cmd.tmpl != nil {
+		err = cmd.tmpl.ExecuteTemplate(prettyPayload, name, val)
 		if err != nil {
 			return fmt.Errorf("failed to execute template: %s", err)
 		}
