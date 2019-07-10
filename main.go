@@ -12,6 +12,8 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/flag"
+	"github.com/gobuffalo/packd"
+	"github.com/gobuffalo/packr/v2"
 	"github.com/jessevdk/go-flags"
 	"github.com/sergi/go-diff/diffmatchpatch"
 	"github.com/sirupsen/logrus"
@@ -27,8 +29,7 @@ type Command struct {
 
 	TaskResources map[string]flag.Dir `long:"task-artifact" short:"t" description:"Mapping from artifact name to local directory, used for converting tasks."`
 
-	TemplatesDir flag.Dir `long:"config-templates" description:"Directory containing templates for pretty-printing configs."`
-	tmpl         *template.Template
+	tmpl *template.Template
 }
 
 type ProjectConfig struct {
@@ -215,10 +216,7 @@ func (cmd Command) Execute([]string) error {
 }
 
 func (cmd *Command) loadTemplates() error {
-	if cmd.TemplatesDir == "" {
-		logrus.Warn("no templates; converted files will be ugly")
-		return nil
-	}
+	box := packr.New("tmpl", "./tmpl")
 
 	cmd.tmpl = template.New("root").Funcs(template.FuncMap{
 		"yaml": func(indent int, x interface{}) (string, error) {
@@ -242,13 +240,19 @@ func (cmd *Command) loadTemplates() error {
 		},
 	})
 
-	var err error
-	cmd.tmpl, err = cmd.tmpl.ParseGlob(cmd.TemplatesDir.Path() + "/*.tmpl")
-	if err != nil {
-		return err
-	}
+	return box.Walk(func(name string, file packd.File) error {
+		tmpl, err := box.FindString(name)
+		if err != nil {
+			return err
+		}
 
-	return nil
+		_, err = cmd.tmpl.New(name).Parse(tmpl)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	})
 }
 
 func (cmd *Command) render(dest string, name string, val interface{}) error {
